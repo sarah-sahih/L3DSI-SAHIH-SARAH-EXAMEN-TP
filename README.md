@@ -117,35 +117,65 @@ php artisan test
 ## 📁 Structure du projet
 
 ```
-tp3/
-├── App.js                     # Point d'entrée principal (Providers, Navigation, Loading)
-├── app.json                   # Configuration Expo
-├── package.json               # Dépendances du projet
-└── src/
+.
+├── App.js
+├── app.json
+├── eas.json
+├── index.js
+├── package.json
+├── .env.example
+├── backend/                           # API Laravel
+│   ├── app/
+│   │   ├── Http/Controllers/Api/
+│   │   │   ├── AuthController.php
+│   │   │   ├── CollaborationController.php
+│   │   │   ├── TaskAttachmentController.php
+│   │   │   └── TaskController.php
+│   │   └── Models/
+│   │       ├── Task.php
+│   │       ├── TaskComment.php
+│   │       ├── TaskNotification.php
+│   │       └── User.php
+│   ├── database/
+│   │   ├── migrations/                # Schéma des tâches, pièces jointes, rappels et collaboration
+│   │   └── seeders/                   # Comptes et tâches de démonstration
+│   ├── routes/api.php
+│   └── tests/Feature/TaskApiTest.php
+├── src/
     ├── components/
-    │   ├── TaskCard.js        # Partie 1 : Composant carte de tâche
-    │   ├── StatCards.js       # Statistiques Total / Terminées / À faire
-    │   ├── SearchBar.js       # Barre de recherche avec icône
-    │   ├── FilterTabs.js      # Onglets de filtre (Toutes / À faire / Terminées)
-    │   ├── SyncBanner.js      # Statut de synchronisation et réseau en direct
-    │   └── LoadingScreen.js   # Partie 5 : Écran de chargement AsyncStorage
+    │   ├── LocationMapPicker.native.js
+    │   ├── LocationMapPicker.web.js
+    │   ├── TaskCard.js
+    │   ├── StatCards.js
+    │   ├── SearchBar.js
+    │   ├── FilterTabs.js
+    │   └── LoadingScreen.js
     ├── constants/
-    │   └── theme.js           # Palette de couleurs et styles du sujet
+    │   └── theme.js
     ├── context/
-    │   └── TaskContext.js     # Moteur Offline-First (AsyncStorage + syncQueue + API)
+    │   └── TaskContext.js              # État des tâches, cache local et synchronisation hors ligne
     ├── data/
-    │   └── initialTasks.js    # Données mock conformes au sujet
+    │   └── initialTasks.js
     ├── navigation/
-    │   ├── AppNavigator.js    # Stack Navigator principal
-    │   └── TabNavigator.js    # Bottom Tab Navigator (4 onglets)
+    │   ├── AppNavigator.js
+    │   └── TabNavigator.js
     ├── screens/
-    │   ├── HomeScreen.js       # Écran 1 : Accueil
-    │   ├── TaskListScreen.js   # Écran 2 : Liste des tâches
-    │   ├── TaskDetailScreen.js # Écran 3 : Détails d'une tâche
-    │   ├── TaskFormScreen.js   # Écran 4 : Formulaire (Ajout / Modification)
-    │   ├── NotificationsScreen.js # Centre des notifications
-    │   └── ProfileScreen.js    # Écran 5 : Profil & Gestion Sync/AsyncStorage
-    └── services/
-        ├── api.js             # Client HTTP API Laravel avec détection d'IP dynamique
-        └── locationGeofencing.js # Tâche native de rappels de lieu
+    │   ├── AuthScreen.js
+    │   ├── HomeScreen.js
+    │   ├── TaskListScreen.js
+    │   ├── TaskDetailScreen.js
+    │   ├── TaskFormScreen.js
+    │   ├── NotificationsScreen.js
+    │   └── ProfileScreen.js
+    ├── services/
+    │   ├── api.js                      # Client HTTP de l'API Laravel
+    │   ├── authToken.js                 # Stockage des jetons d'authentification
+    │   └── locationGeofencing.js        # Rappels de lieu natifs
+    └── utils/
+        ├── attachmentUtils.js
+        ├── locationReminderRegions.js
+        ├── openStreetMapUtils.js
+        ├── photoUtils.js
+        ├── reminderUtils.js
+        └── taskUtils.js
 ```
