@@ -1,12 +1,71 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { INITIAL_TASKS } from '../data/initialTasks';
-import { taskApi } from '../services/api';
+import { authApi, taskApi, collaborationApi } from '../services/api';
+import { clearAuthToken, getAuthToken, saveAuthToken } from '../services/authToken';
+import { getTaskStats } from '../utils/taskUtils';
+import { deleteTaskPhoto } from '../utils/photoUtils';
+import { deleteTaskAttachment } from '../utils/attachmentUtils';
+import {
+  clearLocationReminderGeofences,
+  syncLocationReminderGeofences,
+  cancelDateReminder,
+} from '../utils/reminderUtils';
 
 const STORAGE_KEY = '@mytasks_data_v1';
 const SYNC_QUEUE_KEY = '@mytasks_sync_queue_v1';
 const LAST_SYNC_KEY = '@mytasks_last_sync_v1';
+const AUTH_USER_KEY = '@mytasks_auth_user_v1';
+const userStorageKey = (key, userId) => `${key}:${userId}`;
+
+const synchronizeTaskAttachments = async (taskId, desiredAttachments = []) => {
+  const task = await taskApi.getById(taskId);
+  const serverAttachments = Array.isArray(task.attachments) ? task.attachments : [];
+  const serverByClientId = new Map(
+    serverAttachments
+      .filter((attachment) => attachment.clientId)
+      .map((attachment) => [attachment.clientId, attachment])
+  );
+  const retainedServerIds = new Set(
+    desiredAttachments
+      .filter((attachment) => attachment.serverId || attachment.downloadUrl)
+      .map((attachment) => attachment.serverId || attachment.id)
+  );
+
+  for (const attachment of desiredAttachments) {
+    const uploaded = serverByClientId.get(attachment.id);
+    if (uploaded) retainedServerIds.add(uploaded.id);
+  }
+  for (const attachment of serverAttachments) {
+    if (!retainedServerIds.has(attachment.id)) {
+      await taskApi.deleteAttachment(taskId, attachment.id);
+    }
+  }
+
+  const synchronized = [];
+  for (const attachment of desiredAttachments) {
+    if (attachment.serverId || attachment.downloadUrl) {
+      synchronized.push({
+        ...attachment,
+        serverId: attachment.serverId || attachment.id,
+      });
+      continue;
+    }
+
+    const uploaded = serverByClientId.get(attachment.id)
+      || await taskApi.uploadAttachment(taskId, attachment);
+    synchronized.push({
+      ...uploaded,
+      serverId: uploaded.id,
+      uri: attachment.uri,
+      localId: attachment.id,
+    });
+  }
+  return synchronized;
+};
 
 const TaskContext = createContext(null);
 
@@ -17,10 +76,15 @@ export const TaskProvider = ({ children }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncPendingCount, setSyncPendingCount] = useState(0);
   const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [notifications, setNotifications] = useState([]);
 
   // Keep a ref to avoid stale closures in syncQueue processing
   const syncQueueRef = useRef([]);
   const isSyncingRef = useRef(false);
+  const notifiedNotificationIdsRef = useRef(new Set());
+  const currentUserRef = useRef(null);
 
   // Helper to format date DD/MM/YYYY
   const getCurrentFormattedDate = () => {
@@ -32,25 +96,37 @@ export const TaskProvider = ({ children }) => {
   };
 
   // Helper to persist tasks to AsyncStorage
-  const persistTasks = async (newTasks) => {
+  const persistTasks = useCallback(async (newTasks) => {
     try {
       setTasks(newTasks);
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newTasks));
+      const userId = currentUserRef.current?.id;
+      if (userId) {
+        await AsyncStorage.setItem(
+          userStorageKey(STORAGE_KEY, userId),
+          JSON.stringify(newTasks)
+        );
+      }
     } catch (error) {
       console.error('Error saving tasks to AsyncStorage:', error);
     }
-  };
+  }, []);
 
   // Helper to persist sync queue
-  const persistSyncQueue = async (newQueue) => {
+  const persistSyncQueue = useCallback(async (newQueue) => {
     try {
       syncQueueRef.current = newQueue;
       setSyncPendingCount(newQueue.length);
-      await AsyncStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(newQueue));
+      const userId = currentUserRef.current?.id;
+      if (userId) {
+        await AsyncStorage.setItem(
+          userStorageKey(SYNC_QUEUE_KEY, userId),
+          JSON.stringify(newQueue)
+        );
+      }
     } catch (error) {
       console.error('Error saving sync queue to AsyncStorage:', error);
     }
-  };
+  }, []);
 
   // Enqueue an action when offline or when an API call fails
   const enqueueAction = async (action) => {
@@ -61,29 +137,57 @@ export const TaskProvider = ({ children }) => {
   /**
    * Flush the offline sync queue and synchronize with Laravel API
    */
-  const flushSyncQueue = useCallback(async () => {
-    if (isSyncingRef.current) return;
+  const flushSyncQueue = useCallback(async (userId = currentUserRef.current?.id || null) => {
+    if (isSyncingRef.current || !userId) return;
 
     try {
       isSyncingRef.current = true;
       setIsSyncing(true);
 
-      const queue = syncQueueRef.current;
+      const queue = [...syncQueueRef.current];
 
       if (queue.length > 0) {
         // Send all queued operations to Laravel batch sync endpoint
         const response = await taskApi.syncBatch(queue);
         if (response && response.status === 'success') {
-          // Clear queue
-          await persistSyncQueue([]);
-          if (Array.isArray(response.tasks)) {
-            await persistTasks(response.tasks);
+          let synchronizedTasks = response.tasks;
+          if (Array.isArray(synchronizedTasks)) {
+            for (const action of queue) {
+              const taskId = action.type === 'CREATE'
+                ? action.task?.id
+                : action.type === 'UPDATE' ? action.id : null;
+              const desiredAttachments = action.type === 'CREATE'
+                ? action.task?.attachments
+                : action.type === 'UPDATE' ? action.changes?.attachments : null;
+              if (
+                !taskId
+                || !Array.isArray(desiredAttachments)
+                || !synchronizedTasks.some((task) => task.id === taskId)
+              ) {
+                continue;
+              }
+
+              const attachments = await synchronizeTaskAttachments(taskId, desiredAttachments);
+              synchronizedTasks = synchronizedTasks.map((task) =>
+                task.id === taskId ? { ...task, attachments } : task
+              );
+            }
+          }
+
+          // Remove only the actions included in this request. Actions queued
+          // while the request was in flight must remain pending.
+          const remainingQueue = syncQueueRef.current.filter(
+            (action) => !queue.includes(action)
+          );
+          await persistSyncQueue(remainingQueue);
+          if (remainingQueue.length === 0 && Array.isArray(synchronizedTasks)) {
+            await persistTasks(synchronizedTasks);
           }
         }
       } else {
         // No pending actions: fetch fresh tasks from Laravel
         const serverTasks = await taskApi.getAll();
-        if (Array.isArray(serverTasks) && serverTasks.length > 0) {
+        if (syncQueueRef.current.length === 0 && Array.isArray(serverTasks)) {
           await persistTasks(serverTasks);
         }
       }
@@ -97,85 +201,176 @@ export const TaskProvider = ({ children }) => {
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, []);
+  }, [persistSyncQueue, persistTasks]);
 
   /**
    * Initial load: Instant local cache read, followed by background sync
    */
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     try {
       setLoading(true);
-
-      // 1. Read local tasks first (Instant UX)
-      const storedData = await AsyncStorage.getItem(STORAGE_KEY);
-      let localTasks = [];
-      if (storedData !== null) {
-        localTasks = JSON.parse(storedData);
-        setTasks(localTasks);
-      } else {
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_TASKS));
-        setTasks(INITIAL_TASKS);
-        localTasks = INITIAL_TASKS;
+      const token = await getAuthToken();
+      if (!token) {
+        await clearLocationReminderGeofences().catch((error) => {
+          console.error('Unable to stop location reminders:', error);
+        });
+        currentUserRef.current = null;
+        setCurrentUser(null);
+        setUsers([]);
+        setTasks([]);
+        setNotifications([]);
+        syncQueueRef.current = [];
+        setSyncPendingCount(0);
+        return;
       }
 
-      // 2. Read existing sync queue
-      const storedQueue = await AsyncStorage.getItem(SYNC_QUEUE_KEY);
-      if (storedQueue) {
-        const parsedQueue = JSON.parse(storedQueue);
-        syncQueueRef.current = parsedQueue;
-        setSyncPendingCount(parsedQueue.length);
+      const cachedUserValue = await AsyncStorage.getItem(AUTH_USER_KEY);
+      let user = cachedUserValue ? JSON.parse(cachedUserValue) : null;
+      try {
+        user = await authApi.me();
+        await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+      } catch (error) {
+        if (error.status === 401) {
+          await clearAuthToken();
+          await AsyncStorage.removeItem(AUTH_USER_KEY);
+          await clearLocationReminderGeofences().catch((clearError) => {
+            console.error('Unable to stop location reminders:', clearError);
+          });
+          currentUserRef.current = null;
+          setCurrentUser(null);
+          setUsers([]);
+          setTasks([]);
+          setNotifications([]);
+          syncQueueRef.current = [];
+          setSyncPendingCount(0);
+          return;
+        }
+        if (!user) throw error;
       }
 
-      // 3. Read last sync time
+      currentUserRef.current = user;
+      setCurrentUser(user);
+      collaborationApi.getUsers().then(setUsers).catch(() => {});
+      collaborationApi.getNotifications().then(setNotifications).catch(() => {});
+
+      const storedData = await AsyncStorage.getItem(userStorageKey(STORAGE_KEY, user.id));
+      setTasks(storedData ? JSON.parse(storedData) : []);
+
+      const storedQueue = await AsyncStorage.getItem(userStorageKey(SYNC_QUEUE_KEY, user.id));
+      const parsedQueue = storedQueue ? JSON.parse(storedQueue) : [];
+      syncQueueRef.current = parsedQueue;
+      setSyncPendingCount(parsedQueue.length);
+
       const storedLastSync = await AsyncStorage.getItem(LAST_SYNC_KEY);
       if (storedLastSync) {
         setLastSyncTime(storedLastSync);
       }
 
-      // 4. Initial network check & sync attempt
       const net = await NetInfo.fetch();
       const online = Boolean(net.isConnected && net.isInternetReachable !== false);
       setIsOnline(online);
 
       if (online) {
-        // Attempt background sync
-        flushSyncQueue();
+        void flushSyncQueue(user.id);
       }
     } catch (error) {
       console.error('Error loading tasks:', error);
-      setTasks(INITIAL_TASKS);
     } finally {
       setLoading(false);
     }
+  }, [flushSyncQueue]);
+
+  const authenticate = async (method, name, email, password, passwordConfirmation) => {
+    const result = method === 'register'
+      ? await authApi.register(name, email, password, passwordConfirmation)
+      : await authApi.login(email, password);
+    await saveAuthToken(result.token);
+    await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(result.user));
+    await loadTasks();
+  };
+
+  const logout = async () => {
+    let logoutError = null;
+    try {
+      await authApi.logout();
+    } catch (error) {
+      if (error.status !== 401) logoutError = error;
+    } finally {
+      await clearLocationReminderGeofences().catch((error) => {
+        console.error('Unable to stop location reminders:', error);
+      });
+      await clearAuthToken();
+      await AsyncStorage.removeItem(AUTH_USER_KEY);
+      currentUserRef.current = null;
+      setCurrentUser(null);
+      setUsers([]);
+      setTasks([]);
+      setNotifications([]);
+      syncQueueRef.current = [];
+      setSyncPendingCount(0);
+    }
+    if (logoutError) throw logoutError;
   };
 
   // Monitor network connectivity changes
   useEffect(() => {
-    loadTasks();
+    queueMicrotask(() => {
+      void loadTasks();
+    });
+    let didMount = true;
 
     const unsubscribe = NetInfo.addEventListener((state) => {
       const online = Boolean(state.isConnected && state.isInternetReachable !== false);
       setIsOnline(online);
 
       // Automatically flush queue when coming back online
-      if (online) {
-        flushSyncQueue();
+      if (online && didMount) {
+        void flushSyncQueue();
       }
     });
 
-    return () => unsubscribe();
-  }, [flushSyncQueue]);
+    return () => {
+      didMount = false;
+      unsubscribe();
+    };
+  }, [flushSyncQueue, loadTasks]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void syncLocationReminderGeofences(tasks, currentUser.id).catch((error) => {
+      console.error('Unable to synchronize location reminders:', error);
+    });
+  }, [tasks, currentUser]);
 
   // CRUD Operations (Offline-First)
 
-  const addTask = async ({ title, description, priority = 'Moyenne', status = 'À faire' }) => {
+  const addTask = async ({
+    id,
+    title,
+    description,
+    priority = 'Moyenne',
+    status = 'À faire',
+    photoUri = null,
+    attachments = [],
+    observerIds = [],
+    reminderAt = null,
+    locationReminder = null,
+    dateNotificationId = null,
+  }) => {
     const newTask = {
-      id: Date.now().toString(),
+      id: id || Date.now().toString(),
       title: title.trim(),
       description: description ? description.trim() : '',
       priority: priority || 'Moyenne',
       status: status || 'À faire',
       createdAt: getCurrentFormattedDate(),
+      photoUri,
+      attachments,
+      creatorId: currentUser?.id || null,
+      observerIds,
+      reminderAt,
+      locationReminder,
+      dateNotificationId,
     };
 
     // 1. Instant local update
@@ -186,7 +381,11 @@ export const TaskProvider = ({ children }) => {
     if (isOnline && syncQueueRef.current.length === 0) {
       try {
         await taskApi.create(newTask);
-      } catch (err) {
+        if (attachments.length > 0) {
+          newTask.attachments = await synchronizeTaskAttachments(newTask.id, attachments);
+          await persistTasks([newTask, ...tasks]);
+        }
+      } catch (_err) {
         await enqueueAction({ type: 'CREATE', task: newTask });
       }
     } else {
@@ -198,38 +397,81 @@ export const TaskProvider = ({ children }) => {
 
   const updateTask = async (id, updatedFields) => {
     // 1. Instant local update
+    const existingTask = tasks.find((task) => task.id === id);
+    if (
+      existingTask
+      && Number(existingTask.creatorId ?? existingTask.creator_id) !== Number(currentUser?.id)
+    ) {
+      return false;
+    }
     const updated = tasks.map((task) =>
       task.id === id ? { ...task, ...updatedFields } : task
     );
     await persistTasks(updated);
+    if (
+      existingTask?.photoUri
+      && Object.prototype.hasOwnProperty.call(updatedFields, 'photoUri')
+      && existingTask.photoUri !== updatedFields.photoUri
+    ) {
+      await deleteTaskPhoto(existingTask.photoUri);
+    }
 
     // 2. Online sync or queue
     if (isOnline && syncQueueRef.current.length === 0) {
       try {
         await taskApi.update(id, updatedFields);
-      } catch (err) {
+        if (Object.prototype.hasOwnProperty.call(updatedFields, 'attachments')) {
+          const synchronizedAttachments = await synchronizeTaskAttachments(
+            id,
+            updatedFields.attachments || []
+          );
+          await persistTasks(updated.map((task) =>
+            task.id === id ? { ...task, attachments: synchronizedAttachments } : task
+          ));
+        }
+      } catch (_err) {
         await enqueueAction({ type: 'UPDATE', id, changes: updatedFields });
       }
     } else {
       await enqueueAction({ type: 'UPDATE', id, changes: updatedFields });
     }
+    return true;
   };
 
   const deleteTask = async (id) => {
+    const taskToDelete = tasks.find((task) => task.id === id);
+    if (
+      taskToDelete
+      && Number(taskToDelete.creatorId ?? taskToDelete.creator_id) !== Number(currentUser?.id)
+    ) {
+      return false;
+    }
     // 1. Instant local update
     const updated = tasks.filter((task) => task.id !== id);
     await persistTasks(updated);
+    if (taskToDelete?.photoUri) {
+      await deleteTaskPhoto(taskToDelete.photoUri);
+    }
+    if (taskToDelete?.dateNotificationId) {
+      await cancelDateReminder(taskToDelete.dateNotificationId);
+    }
+    if (Array.isArray(taskToDelete?.attachments)) {
+      await Promise.all(
+        taskToDelete.attachments.map((attachment) => deleteTaskAttachment(attachment))
+      );
+    }
 
     // 2. Online sync or queue
     if (isOnline && syncQueueRef.current.length === 0) {
       try {
         await taskApi.delete(id);
-      } catch (err) {
+      } catch (_err) {
         await enqueueAction({ type: 'DELETE', id });
       }
     } else {
       await enqueueAction({ type: 'DELETE', id });
     }
+    return true;
   };
 
   const toggleTaskStatus = async (id) => {
@@ -241,38 +483,91 @@ export const TaskProvider = ({ children }) => {
   };
 
   const resetToDefaultTasks = async () => {
-    await persistTasks(INITIAL_TASKS);
-    await persistSyncQueue([]);
-    if (isOnline) {
+    const visibleInitialTasks = INITIAL_TASKS.map((task) => ({
+      ...task,
+      creatorId: currentUser?.id || null,
+      observerIds: [],
+    }));
+    await persistTasks(visibleInitialTasks);
+    const resetAction = { type: 'REPLACE', tasks: visibleInitialTasks };
+
+    if (isOnline && syncQueueRef.current.length === 0) {
       try {
-        // Push initial tasks as creates
-        const actions = INITIAL_TASKS.map((t) => ({ type: 'CREATE', task: t }));
-        await taskApi.syncBatch(actions);
-      } catch (e) {
-        console.warn('Could not reset on server:', e.message);
+        const response = await taskApi.syncBatch([resetAction]);
+        if (response && response.status === 'success') {
+          await persistSyncQueue([]);
+        }
+      } catch (_e) {
+        await enqueueAction(resetAction);
       }
+    } else {
+      await enqueueAction(resetAction);
     }
   };
 
   const clearAllTasks = async () => {
-    const idsToDelete = tasks.map((t) => t.id);
     await persistTasks([]);
-    if (isOnline) {
+
+    const clearAction = { type: 'CLEAR' };
+    if (isOnline && syncQueueRef.current.length === 0) {
       try {
-        const actions = idsToDelete.map((id) => ({ type: 'DELETE', id }));
-        await taskApi.syncBatch(actions);
-      } catch (e) {
-        console.warn('Could not clear server tasks:', e.message);
+        const response = await taskApi.syncBatch([clearAction]);
+        if (response && response.status === 'success') {
+          await persistSyncQueue([]);
+        }
+      } catch (_e) {
+        await enqueueAction(clearAction);
       }
+    } else {
+      await enqueueAction(clearAction);
     }
   };
 
+  const refreshNotifications = useCallback(async ({ notify = true } = {}) => {
+    if (!currentUser) return [];
+    const userNotifications = await collaborationApi.getNotifications();
+    setNotifications(userNotifications);
+
+    if (notify && Platform.OS !== 'web') {
+      const currentPermission = await Notifications.getPermissionsAsync();
+      const permission = currentPermission.status === 'granted'
+        ? currentPermission
+        : await Notifications.requestPermissionsAsync();
+      if (permission.status === 'granted') {
+        for (const notification of userNotifications) {
+          if (
+            !notification.read
+            && !notifiedNotificationIdsRef.current.has(notification.id)
+          ) {
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: notification.title,
+                body: notification.body,
+                data: {
+                  taskId: notification.task_id,
+                  notificationId: notification.id,
+                },
+              },
+              trigger: null,
+            });
+            notifiedNotificationIdsRef.current.add(notification.id);
+          }
+        }
+      }
+    }
+    return userNotifications;
+  }, [currentUser]);
+
+  const markNotificationRead = useCallback(async (notificationId) => {
+    if (!currentUser) return;
+    await collaborationApi.markNotificationRead(notificationId);
+    setNotifications((current) => current.map((notification) =>
+      notification.id === notificationId ? { ...notification, read: true } : notification
+    ));
+  }, [currentUser]);
+
   // Statistics calculation
-  const stats = {
-    total: tasks.length,
-    completed: tasks.filter((t) => t.status === 'Terminée').length,
-    pending: tasks.filter((t) => t.status === 'À faire').length,
-  };
+  const stats = getTaskStats(tasks);
 
   return (
     <TaskContext.Provider
@@ -286,12 +581,19 @@ export const TaskProvider = ({ children }) => {
         lastSyncTime,
         syncNow: flushSyncQueue,
         loadTasks,
+        authenticate,
+        logout,
         addTask,
         updateTask,
         deleteTask,
         toggleTaskStatus,
         resetToDefaultTasks,
         clearAllTasks,
+        users,
+        currentUser,
+        notifications,
+        refreshNotifications,
+        markNotificationRead,
       }}
     >
       {children}

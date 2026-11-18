@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use App\Models\Task;
+use App\Models\User;
 
 class TaskSeeder extends Seeder
 {
@@ -12,6 +13,10 @@ class TaskSeeder extends Seeder
      */
     public function run(): void
     {
+        $sarah = User::where('email', 'sarah@mytasks.local')->first();
+        $lina = User::where('email', 'lina@mytasks.local')->first();
+        $ahmed = User::where('email', 'ahmed@mytasks.local')->first();
+
         $tasks = [
             [
                 'id' => '1',
@@ -56,7 +61,13 @@ class TaskSeeder extends Seeder
         ];
 
         foreach ($tasks as $task) {
-            Task::updateOrCreate(['id' => $task['id']], $task);
+            $taskModel = Task::updateOrCreate(
+                ['id' => $task['id']],
+                array_merge($task, ['creator_id' => $sarah?->id])
+            );
+            if ($lina) {
+                $taskModel->observers()->syncWithoutDetaching([$lina->id]);
+            }
         }
     }
 }

@@ -38,18 +38,28 @@ Architecture de navigation complète combinant **Bottom Tab Navigator** et **Sta
 2. **Écran Liste des tâches** ([`TaskListScreen`](src/screens/TaskListScreen.js)) : Liste avec recherche et filtres.
 3. **Écran Détails** ([`TaskDetailScreen`](src/screens/TaskDetailScreen.js)) : Vue détaillée, changement rapide de statut, boutons "Modifier" et "Supprimer".
 4. **Écran Formulaire** ([`TaskFormScreen`](src/screens/TaskFormScreen.js)) : Ajout / Édition.
-5. **Écran Profil** ([`ProfileScreen`](src/screens/ProfileScreen.js)) : Profil utilisateur, taux de complétion, réinitialisation des 5 tâches de démo.
+5. **Écran Profil** ([`ProfileScreen`](src/screens/ProfileScreen.js)) : Profil utilisateur, taux de complétion, réinitialisation des 5 tâches de démo et accès au centre des notifications.
 
 ### 5. Partie 5 — Persistance des données (Offline-First : AsyncStorage + API Laravel)
 - Gestionnaire d'état [`TaskContext`](src/context/TaskContext.js) implémentant une architecture **Offline-First** complète.
 - Écran de chargement avec indicateur [`LoadingScreen`](src/components/LoadingScreen.js) ("Chargement de vos tâches...").
 - **Stockage local persistant** (`AsyncStorage`) : l'application charge instantanément les données en local et permet d'ajouter/modifier/supprimer même en mode avion.
 - **File d'attente de synchronisation (`syncQueue`)** : chaque action effectuée hors-ligne est mise en mémoire tampon.
-- **Backend API Laravel (`C:\laragon\www\mytasks-api`)** :
+- **Backend API Laravel (`backend/`)** :
   - Routes REST (`/api/tasks`) et endpoint de synchronisation groupée (`/api/tasks/sync`).
   - Détection automatique du réseau via `@react-native-community/netinfo`.
   - Dès le retour du réseau, la file d'attente est automatiquement envoyée à Laravel et synchronisée.
 - Bannière visuelle [`SyncBanner`](src/components/SyncBanner.js) affichant l'état en direct (*En ligne / Hors-ligne / Nombre d'actions en attente / Heure de dernière sync*).
+- Photo locale attachée à chaque tâche : prise via la caméra, stockage permanent dans les documents de l'application et suppression avec la tâche.
+- Fichiers joints de tout type : stockage privé sur le serveur et téléchargement réservé au créateur et aux observateurs. Seul le créateur peut ajouter ou supprimer des fichiers ; les envois hors ligne sont repris lors de la synchronisation.
+- Rappel date/heure : sélection native Android/iOS ou saisie ISO sur Web, notification locale planifiée.
+- Rappel à une position : recherche OpenStreetMap/Nominatim ou position actuelle, géorepérage à l'entrée pour notifier en arrière-plan sur Android/iOS. iOS autorise au plus 20 zones surveillées ; cette fonctionnalité nécessite une build de développement et les autorisations adaptées.
+- Observateurs : sélectionnés par le créateur, commentaires réservés au créateur et aux observateurs, notifications pour tous les destinataires sauf l'auteur. Le centre de notifications affiche un badge et ouvre la tâche concernée.
+- Authentification par inscription/connexion Laravel Sanctum. Les routes de tâches et de collaboration exigent un jeton Bearer ; les jetons mobiles sont conservés dans le stockage sécurisé iOS/Android.
+
+### Comptes de démonstration
+
+Après avoir exécuté les seeders Laravel, les comptes Sarah, Lina et Ahmed utilisent le mot de passe de démonstration `password`. Ces identifiants sont destinés uniquement au développement local ; créez un compte personnel via l'écran d'inscription pour les tests normaux.
 
 ---
 
@@ -57,9 +67,39 @@ Architecture de navigation complète combinant **Bottom Tab Navigator** et **Sta
 
 ### Démarrer le serveur Expo :
 ```bash
+npm install
 npm start
 # ou
 npx expo start
+```
+
+### Installer et démarrer l'API Laravel :
+```powershell
+Set-Location backend
+composer install
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+if (-not (Test-Path database\database.sqlite)) { New-Item -ItemType File database\database.sqlite | Out-Null }
+php artisan key:generate
+php artisan migrate --seed
+php artisan serve --host=0.0.0.0 --port=8000
+```
+
+Pour utiliser une adresse Laravel spécifique, créez un fichier `.env.local` à la
+racine du projet à partir de `.env.example` et renseignez `EXPO_PUBLIC_API_URL`.
+Ce fichier reste local et n'est pas versionné.
+
+Sur un appareil physique, indiquez l'adresse IP locale de l'ordinateur qui exécute Laravel, pas `127.0.0.1`. Les rappels de lieu en arrière-plan nécessitent une build native de développement avec les permissions de localisation accordées ; Expo Go ne permet pas de les valider complètement. Le téléversement de pièces jointes est limité à 50 Mo et le serveur PHP doit autoriser cette taille.
+
+### Tests et vérifications :
+```bash
+npm test
+npm run lint
+npx expo-doctor
+npx expo export --platform web
+npx expo export --platform android
+
+cd backend
+php artisan test
 ```
 
 ### Options de visualisation :
@@ -103,7 +143,9 @@ tp3/
     │   ├── TaskListScreen.js   # Écran 2 : Liste des tâches
     │   ├── TaskDetailScreen.js # Écran 3 : Détails d'une tâche
     │   ├── TaskFormScreen.js   # Écran 4 : Formulaire (Ajout / Modification)
+    │   ├── NotificationsScreen.js # Centre des notifications
     │   └── ProfileScreen.js    # Écran 5 : Profil & Gestion Sync/AsyncStorage
     └── services/
-        └── api.js             # Client HTTP API Laravel avec détection d'IP dynamique
+        ├── api.js             # Client HTTP API Laravel avec détection d'IP dynamique
+        └── locationGeofencing.js # Tâche native de rappels de lieu
 ```

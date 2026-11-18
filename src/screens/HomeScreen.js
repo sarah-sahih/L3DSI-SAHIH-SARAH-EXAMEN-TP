@@ -1,25 +1,35 @@
 import React from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTasks } from '../context/TaskContext';
 import StatCards from '../components/StatCards';
 import TaskCard from '../components/TaskCard';
-import SyncBanner from '../components/SyncBanner';
 import { COLORS } from '../constants/theme';
+import {
+  getTaskStats,
+  getTasksCreatedByUser,
+  getTasksObservedByUser,
+} from '../utils/taskUtils';
 
 /**
  * Screen 1: Accueil (Partie 4)
  * Présentation de l'application et statistiques
  */
 export default function HomeScreen({ navigation }) {
-  const { stats, tasks } = useTasks();
+  const { tasks, currentUser, syncNow } = useTasks();
+  const ownTasks = getTasksCreatedByUser(tasks, currentUser?.id);
+  const observedTasks = getTasksObservedByUser(tasks, currentUser?.id);
+  const ownTaskStats = getTaskStats(ownTasks);
 
-  // Get top 2 recent tasks
-  const recentTasks = tasks.slice(0, 2);
+  useFocusEffect(
+    React.useCallback(() => {
+      void syncNow();
+    }, [syncNow])
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <SyncBanner />
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Header Presentation */}
         <View style={styles.header}>
@@ -31,7 +41,7 @@ export default function HomeScreen({ navigation }) {
         </View>
 
         {/* Statistics Cards */}
-        <StatCards stats={stats} />
+        <StatCards stats={ownTaskStats} />
 
         {/* Main CTA Action Buttons */}
         <View style={styles.actionsContainer}>
@@ -55,25 +65,24 @@ export default function HomeScreen({ navigation }) {
         </View>
 
         {/* Recent Tasks Section */}
-        {recentTasks.length > 0 && (
-          <View style={styles.recentSection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Tâches récentes</Text>
-              <TouchableOpacity onPress={() => navigation.navigate('Tâches')}>
-                <Text style={styles.seeAllText}>Voir tout</Text>
-              </TouchableOpacity>
-            </View>
-
-            {recentTasks.map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                variant="full"
-                onPress={() => navigation.navigate('TaskDetail', { taskId: task.id })}
-              />
-            ))}
+        <View style={styles.recentSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Tâches observées</Text>
           </View>
-        )}
+
+          {observedTasks.length > 0 ? observedTasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              variant="full"
+              onPress={() => navigation.navigate('TaskDetail', { taskId: task.id })}
+            />
+          )) : (
+            <Text style={styles.emptyObservedText}>
+              Vous n’êtes observateur d’aucune tâche pour le moment.
+            </Text>
+          )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -168,9 +177,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1E293B',
   },
-  seeAllText: {
-    fontSize: 13,
-    color: COLORS.primary,
-    fontWeight: '600',
+  emptyObservedText: {
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    color: '#64748B',
+    fontSize: 14,
   },
 });

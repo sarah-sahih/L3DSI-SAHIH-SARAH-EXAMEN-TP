@@ -15,7 +15,21 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $users = [
+            ['name' => 'Sarah', 'email' => 'sarah@mytasks.local'],
+            ['name' => 'Lina', 'email' => 'lina@mytasks.local'],
+            ['name' => 'Ahmed', 'email' => 'ahmed@mytasks.local'],
+        ];
+
+        foreach ($users as $user) {
+            User::updateOrCreate(
+                ['email' => $user['email']],
+                [
+                    'name' => $user['name'],
+                    'password' => 'password',
+                ]
+            );
+        }
 
         $this->call(TaskSeeder::class);
     }

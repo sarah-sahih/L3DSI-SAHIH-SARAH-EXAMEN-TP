@@ -22,7 +22,28 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Autorisez MyTasks a acceder a votre appareil photo.",
+          "photosPermission": "Autorisez MyTasks a acceder a vos photos.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-notifications",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Autorisez MyTasks a verifier les rappels a proximite.",
+          "locationAlwaysAndWhenInUsePermission": "Autorisez MyTasks a verifier les rappels a proximite.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      "expo-sharing",
+      "@react-native-community/datetimepicker",
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {
