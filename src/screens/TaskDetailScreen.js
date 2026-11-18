@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,10 +7,16 @@ import {
   SafeAreaView,
   ScrollView,
   Alert,
+  Image,
+  Linking,
+  TextInput,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTasks } from '../context/TaskContext';
 import { COLORS } from '../constants/theme';
+import { openTaskAttachment } from '../utils/attachmentUtils';
+import { collaborationApi, taskApi } from '../services/api';
 
 /**
  * Screen 3: Détails d'une tâche (Partie 4)
@@ -18,9 +24,87 @@ import { COLORS } from '../constants/theme';
  */
 export default function TaskDetailScreen({ route, navigation }) {
   const { taskId } = route.params || {};
-  const { tasks, deleteTask, toggleTaskStatus } = useTasks();
+  const { tasks, deleteTask, toggleTaskStatus, currentUser, refreshNotifications } = useTasks();
 
   const task = tasks.find((t) => t.id === taskId);
+  const photoAttachment = task?.attachments?.find((attachment) => attachment.isPhoto);
+  const localPhotoUri = photoAttachment?.uri || task?.photoUri;
+  const photoAttachmentId = photoAttachment?.id;
+  const photoAttachmentDownloadUrl = photoAttachment?.downloadUrl;
+  const photoAttachmentName = photoAttachment?.name;
+  const [downloadedPhoto, setDownloadedPhoto] = useState(null);
+  const [photoLoadErrorId, setPhotoLoadErrorId] = useState(null);
+  const displayedPhotoUri = localPhotoUri || (
+    downloadedPhoto && downloadedPhoto.attachmentId === photoAttachmentId
+      ? downloadedPhoto.uri
+      : null
+  );
+  const photoLoadError = photoLoadErrorId === photoAttachmentId;
+  const [collaboration, setCollaboration] = useState({
+    creator: null,
+    observers: [],
+    comments: [],
+  });
+  const [commentBody, setCommentBody] = useState('');
+
+  useEffect(() => {
+    if (!taskId) return;
+    collaborationApi.getDetails(taskId).then(setCollaboration).catch(() => {});
+  }, [taskId, currentUser?.id]);
+
+  useEffect(() => {
+    if (!taskId || localPhotoUri || !photoAttachmentId || !photoAttachmentDownloadUrl) {
+      return undefined;
+    }
+
+    let active = true;
+    let objectUrl = null;
+    taskApi.downloadAttachment({
+      id: photoAttachmentId,
+      downloadUrl: photoAttachmentDownloadUrl,
+      name: photoAttachmentName,
+    })
+      .then((uri) => {
+        objectUrl = uri;
+        if (active) {
+          setDownloadedPhoto({ attachmentId: photoAttachmentId, uri });
+        } else if (Platform.OS === 'web') {
+          URL.revokeObjectURL(uri);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          console.error('Unable to load task photo:', error);
+          setPhotoLoadErrorId(photoAttachmentId);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (Platform.OS === 'web' && objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [
+    localPhotoUri,
+    photoAttachmentDownloadUrl,
+    photoAttachmentId,
+    photoAttachmentName,
+    taskId,
+  ]);
+
+  const handleAddComment = async () => {
+    if (!commentBody.trim() || !currentUser) return;
+    try {
+      await collaborationApi.addComment(taskId, commentBody.trim());
+      setCommentBody('');
+      const details = await collaborationApi.getDetails(taskId);
+      setCollaboration(details);
+      await refreshNotifications();
+    } catch (error) {
+      Alert.alert('Commentaire refusé', error.message);
+    }
+  };
 
   if (!task) {
     return (
@@ -58,6 +142,7 @@ export default function TaskDetailScreen({ route, navigation }) {
   };
 
   const isCompleted = task.status === 'Terminée';
+  const isCreator = Number(task.creatorId ?? task.creator_id) === Number(currentUser?.id);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -69,13 +154,7 @@ export default function TaskDetailScreen({ route, navigation }) {
           activeOpacity={0.7}
         >
           <Ionicons name="chevron-back" size={24} color="#1E293B" />
-          <Text style={styles.headerTitle}>Détails d'une tâche</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.headerRight}
-          onPress={() => navigation.navigate('TaskForm', { mode: 'edit', task })}
-        >
-          <Ionicons name="ellipsis-vertical" size={20} color="#64748B" />
+          <Text style={styles.headerTitle}>{"Détails d'une tâche"}</Text>
         </TouchableOpacity>
       </View>
 
@@ -116,52 +195,189 @@ export default function TaskDetailScreen({ route, navigation }) {
             <Ionicons name="calendar-outline" size={16} color="#64748B" />
             <Text style={styles.dateText}>Date de création {task.createdAt}</Text>
           </View>
+          <View style={styles.creatorRow}>
+            <Ionicons name="person-circle-outline" size={16} color="#64748B" />
+            <Text style={styles.creatorText}>
+              Créateur : {collaboration.creator?.name || (isCreator ? currentUser?.name : 'Chargement...')}
+            </Text>
+          </View>
         </View>
+
+        {displayedPhotoUri || photoLoadError ? (
+          <View style={styles.photoCard}>
+            <Text style={styles.photoLabel}>Photo</Text>
+            {displayedPhotoUri ? (
+              <Image
+                source={{ uri: displayedPhotoUri }}
+                style={styles.photo}
+              />
+            ) : (
+              <Text style={styles.emptyText}>Impossible de charger la photo.</Text>
+            )}
+          </View>
+        ) : null}
+
+        <View style={styles.collaborationCard}>
+          <Text style={styles.collaborationTitle}>Observateurs</Text>
+          {collaboration.observers.length > 0 ? (
+            collaboration.observers.map((observer) => (
+              <View key={observer.id} style={styles.observerRow}>
+                <Ionicons name="person-circle-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.observerText}>{observer.name}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>Aucun observateur sélectionné.</Text>
+          )}
+
+          <Text style={[styles.collaborationTitle, { marginTop: 16 }]}>Commentaires</Text>
+          {collaboration.comments.map((comment) => (
+            <View key={comment.id} style={styles.commentCard}>
+              <Text style={styles.commentAuthor}>{comment.user?.name || 'Utilisateur'}</Text>
+              <Text style={styles.commentBody}>{comment.body}</Text>
+            </View>
+          ))}
+          {collaboration.comments.length === 0 ? (
+            <Text style={styles.emptyText}>Aucun commentaire.</Text>
+          ) : null}
+
+          {(collaboration.creator?.id === currentUser?.id
+            || collaboration.observers.some((observer) => observer.id === currentUser?.id)) ? (
+            <View style={styles.commentInputRow}>
+              <TextInput
+                style={styles.commentInput}
+                value={commentBody}
+                onChangeText={setCommentBody}
+                placeholder="Ajouter un commentaire..."
+                placeholderTextColor="#94A3B8"
+                multiline
+              />
+              <TouchableOpacity
+                style={styles.commentSendButton}
+                activeOpacity={0.8}
+                onPress={handleAddComment}
+              >
+                <Ionicons name="send" size={18} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.emptyText}>
+              Seuls le créateur et les observateurs peuvent commenter.
+            </Text>
+          )}
+        </View>
+
+        {task.reminderAt ? (
+          <View style={styles.reminderCard}>
+            <Ionicons name="notifications-outline" size={20} color={COLORS.primary} />
+            <View style={styles.reminderTextContainer}>
+              <Text style={styles.reminderLabel}>Rappel date et heure</Text>
+              <Text style={styles.reminderValue}>
+                {new Date(task.reminderAt).toLocaleString('fr-FR')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {task.locationReminder?.latitude && task.locationReminder?.longitude ? (
+          <TouchableOpacity
+            style={styles.reminderCard}
+            activeOpacity={0.8}
+            onPress={() => Linking.openURL(
+              `https://www.openstreetmap.org/?mlat=${task.locationReminder.latitude}&mlon=${task.locationReminder.longitude}#map=16/${task.locationReminder.latitude}/${task.locationReminder.longitude}`
+            )}
+          >
+            <Ionicons name="location-outline" size={20} color={COLORS.success} />
+            <View style={styles.reminderTextContainer}>
+              <Text style={styles.reminderLabel}>Rappel à une position</Text>
+              <Text style={styles.reminderValue} numberOfLines={2}>
+                {task.locationReminder.name}
+              </Text>
+            </View>
+            <Ionicons name="open-outline" size={18} color="#94A3B8" />
+          </TouchableOpacity>
+        ) : null}
+
+        {Array.isArray(task.attachments)
+          && task.attachments.some((attachment) => !attachment.isPhoto) ? (
+          <View style={styles.attachmentsCard}>
+            <Text style={styles.photoLabel}>Fichiers joints</Text>
+            {task.attachments.filter((attachment) => !attachment.isPhoto).map((attachment) => (
+              <TouchableOpacity
+                key={attachment.id}
+                style={styles.attachmentRow}
+                activeOpacity={0.7}
+                onPress={async () => {
+                  try {
+                    await openTaskAttachment(attachment);
+                  } catch (_error) {
+                    Alert.alert('Erreur', "Impossible d'ouvrir ce fichier.");
+                  }
+                }}
+              >
+                <Ionicons name="document-outline" size={20} color={COLORS.primary} />
+                <View style={styles.attachmentTextContainer}>
+                  <Text style={styles.attachmentName} numberOfLines={1}>
+                    {attachment.name}
+                  </Text>
+                  <Text style={styles.attachmentMeta}>
+                    {attachment.mimeType || 'Fichier'}
+                  </Text>
+                </View>
+                <Ionicons name="open-outline" size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
 
         {/* Quick Toggle Status Button */}
-        <TouchableOpacity
-          style={[
-            styles.toggleStatusButton,
-            { backgroundColor: isCompleted ? '#FEF3C7' : '#DCFCE7' },
-          ]}
-          activeOpacity={0.8}
-          onPress={() => toggleTaskStatus(task.id)}
-        >
-          <Ionicons
-            name={isCompleted ? 'arrow-undo-outline' : 'checkmark-done-circle-outline'}
-            size={20}
-            color={isCompleted ? '#D97706' : '#16A34A'}
-          />
-          <Text
+        {isCreator ? (
+          <TouchableOpacity
             style={[
-              styles.toggleStatusText,
-              { color: isCompleted ? '#D97706' : '#16A34A' },
+              styles.toggleStatusButton,
+              { backgroundColor: isCompleted ? '#FEF3C7' : '#DCFCE7' },
             ]}
+            activeOpacity={0.8}
+            onPress={() => toggleTaskStatus(task.id)}
           >
-            {isCompleted ? 'Marquer comme à faire' : 'Marquer comme terminée'}
-          </Text>
-        </TouchableOpacity>
+            <Ionicons
+              name={isCompleted ? 'arrow-undo-outline' : 'checkmark-done-circle-outline'}
+              size={20}
+              color={isCompleted ? '#D97706' : '#16A34A'}
+            />
+            <Text
+              style={[
+                styles.toggleStatusText,
+                { color: isCompleted ? '#D97706' : '#16A34A' },
+              ]}
+            >
+              {isCompleted ? 'Marquer comme à faire' : 'Marquer comme terminée'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
 
         {/* Action Buttons: Modifier & Supprimer */}
-        <View style={styles.actionButtonsContainer}>
-          <TouchableOpacity
-            style={styles.modifyButton}
-            activeOpacity={0.85}
-            onPress={() => navigation.navigate('TaskForm', { mode: 'edit', task })}
-          >
-            <Ionicons name="create-outline" size={18} color="#FFFFFF" style={styles.buttonIcon} />
-            <Text style={styles.modifyButtonText}>Modifier</Text>
-          </TouchableOpacity>
+        {isCreator ? (
+          <View style={styles.actionButtonsContainer}>
+            <TouchableOpacity
+              style={styles.modifyButton}
+              activeOpacity={0.85}
+              onPress={() => navigation.navigate('TaskForm', { mode: 'edit', task })}
+            >
+              <Ionicons name="create-outline" size={18} color="#FFFFFF" style={styles.buttonIcon} />
+              <Text style={styles.modifyButtonText}>Modifier</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.deleteButton}
-            activeOpacity={0.85}
-            onPress={handleDelete}
-          >
-            <Ionicons name="trash-outline" size={18} color="#FFFFFF" style={styles.buttonIcon} />
-            <Text style={styles.deleteButtonText}>Supprimer</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              activeOpacity={0.85}
+              onPress={handleDelete}
+            >
+              <Ionicons name="trash-outline" size={18} color="#FFFFFF" style={styles.buttonIcon} />
+              <Text style={styles.deleteButtonText}>Supprimer</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -191,9 +407,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#0F172A',
-  },
-  headerRight: {
-    padding: 6,
   },
   scrollContent: {
     padding: 16,
@@ -257,6 +470,155 @@ const styles = StyleSheet.create({
   dateText: {
     fontSize: 13,
     color: '#64748B',
+  },
+  creatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  creatorText: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  photoCard: {
+    marginTop: 16,
+  },
+  photoLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    marginBottom: 6,
+    letterSpacing: 0.5,
+  },
+  photo: {
+    width: '100%',
+    height: 240,
+    borderRadius: 16,
+    backgroundColor: '#E2E8F0',
+  },
+  attachmentsCard: {
+    marginTop: 16,
+  },
+  reminderCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  reminderTextContainer: {
+    flex: 1,
+    marginHorizontal: 10,
+  },
+  reminderLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  reminderValue: {
+    color: '#1E293B',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  collaborationCard: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  collaborationTitle: {
+    color: '#1E293B',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  observerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  observerText: {
+    color: '#334155',
+    fontSize: 13,
+  },
+  emptyText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 8,
+  },
+  commentCard: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+  },
+  commentAuthor: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  commentBody: {
+    color: '#334155',
+    fontSize: 13,
+    marginTop: 3,
+  },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginTop: 12,
+  },
+  commentInput: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 100,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#1E293B',
+  },
+  commentSendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.primary,
+  },
+  attachmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  attachmentTextContainer: {
+    flex: 1,
+    marginHorizontal: 10,
+  },
+  attachmentName: {
+    color: '#1E293B',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  attachmentMeta: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
   },
   toggleStatusButton: {
     flexDirection: 'row',

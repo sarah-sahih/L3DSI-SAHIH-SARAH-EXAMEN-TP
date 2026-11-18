@@ -14,15 +14,20 @@ import StatCards from '../components/StatCards';
 import SearchBar from '../components/SearchBar';
 import FilterTabs from '../components/FilterTabs';
 import TaskCard from '../components/TaskCard';
-import SyncBanner from '../components/SyncBanner';
 import { COLORS } from '../constants/theme';
+import { filterTasks, getTaskStats, getTasksCreatedByUser } from '../utils/taskUtils';
 
 /**
  * Screen 2: Liste des tâches (Partie 2 & Partie 4)
  * Affichage dynamique avec FlatList, filtres, recherche et statistiques
  */
 export default function TaskListScreen({ navigation }) {
-  const { tasks, stats, syncNow, toggleTaskStatus } = useTasks();
+  const { tasks, syncNow, toggleTaskStatus, currentUser } = useTasks();
+  const ownTasks = useMemo(
+    () => getTasksCreatedByUser(tasks, currentUser?.id),
+    [tasks, currentUser?.id]
+  );
+  const ownTaskStats = getTaskStats(ownTasks);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('Toutes');
   const [refreshing, setRefreshing] = useState(false);
@@ -35,27 +40,11 @@ export default function TaskListScreen({ navigation }) {
 
   // Filter & Search logic
   const filteredTasks = useMemo(() => {
-    return tasks.filter((task) => {
-      // Status filter
-      const matchesFilter =
-        activeFilter === 'Toutes' ||
-        (activeFilter === 'À faire' && task.status === 'À faire') ||
-        (activeFilter === 'Terminées' && task.status === 'Terminée');
-
-      // Search query filter (title or description)
-      const query = searchQuery.trim().toLowerCase();
-      const matchesSearch =
-        query === '' ||
-        task.title.toLowerCase().includes(query) ||
-        (task.description && task.description.toLowerCase().includes(query));
-
-      return matchesFilter && matchesSearch;
-    });
-  }, [tasks, activeFilter, searchQuery]);
+    return filterTasks(ownTasks, activeFilter, searchQuery);
+  }, [ownTasks, activeFilter, searchQuery]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <SyncBanner />
       {/* Screen Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Mes tâches</Text>
@@ -77,7 +66,7 @@ export default function TaskListScreen({ navigation }) {
         ListHeaderComponent={
           <View style={styles.listHeader}>
             {/* Stat Cards */}
-            <StatCards stats={stats} />
+            <StatCards stats={ownTaskStats} />
 
             {/* Search Bar */}
             <SearchBar
@@ -103,7 +92,11 @@ export default function TaskListScreen({ navigation }) {
             task={item}
             variant="compact"
             onPress={() => navigation.navigate('TaskDetail', { taskId: item.id })}
-            onToggleStatus={toggleTaskStatus}
+            onToggleStatus={
+              Number(item.creatorId ?? item.creator_id) === Number(currentUser?.id)
+                ? toggleTaskStatus
+                : undefined
+            }
           />
         )}
         ListEmptyComponent={
@@ -113,7 +106,7 @@ export default function TaskListScreen({ navigation }) {
             <Text style={styles.emptySubtitle}>
               {searchQuery
                 ? 'Essayez de modifier votre recherche'
-                : 'Créez votre première tâche en appuyant sur le bouton +'}
+                : 'Vous n’avez pas encore créé de tâche. Appuyez sur + pour en ajouter une.'}
             </Text>
           </View>
         }
@@ -121,14 +114,6 @@ export default function TaskListScreen({ navigation }) {
         showsVerticalScrollIndicator={false}
       />
 
-      {/* Floating Action Button */}
-      <TouchableOpacity
-        style={styles.fab}
-        activeOpacity={0.85}
-        onPress={() => navigation.navigate('TaskForm', { mode: 'add' })}
-      >
-        <Ionicons name="add" size={28} color="#FFFFFF" />
-      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -201,21 +186,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#94A3B8',
     textAlign: 'center',
-  },
-  fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 20,
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
   },
 });

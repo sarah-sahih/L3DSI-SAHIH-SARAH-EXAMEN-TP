@@ -6,10 +6,14 @@ import TaskListScreen from '../screens/TaskListScreen';
 import TaskFormScreen from '../screens/TaskFormScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import { COLORS } from '../constants/theme';
+import { useTasks } from '../context/TaskContext';
 
 const Tab = createBottomTabNavigator();
 
 export default function TabNavigator() {
+  const { notifications } = useTasks();
+  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -77,6 +81,11 @@ export default function TabNavigator() {
         name="Profil"
         component={ProfileScreen}
         options={{
+          tabBarBadge: unreadNotificationCount || undefined,
+          tabBarBadgeStyle: {
+            backgroundColor: COLORS.danger,
+            color: '#FFFFFF',
+          },
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={color} />
           ),
