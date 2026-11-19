@@ -36,7 +36,7 @@ export const getApiBaseUrl = () => {
   return 'http://127.0.0.1:8000/api';
 };
 
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 10000;
 
 const withoutAttachments = (task) => {
   const serverTask = { ...task };

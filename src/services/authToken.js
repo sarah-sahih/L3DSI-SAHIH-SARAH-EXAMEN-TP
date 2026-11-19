@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 
-const TOKEN_KEY = '@mytasks_auth_token_v1';
+const TOKEN_KEY = 'mytasks_auth_token_v1';
 
 export const getAuthToken = () => (
   Platform.OS === 'web'
