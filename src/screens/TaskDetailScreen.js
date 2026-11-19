@@ -4,7 +4,6 @@ import {
   Text,
   View,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Alert,
   Image,
@@ -12,6 +11,7 @@ import {
   TextInput,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTasks } from '../context/TaskContext';
 import { COLORS } from '../constants/theme';
