@@ -211,9 +211,7 @@ export const TaskProvider = ({ children }) => {
       setLoading(true);
       const token = await getAuthToken();
       if (!token) {
-        await clearLocationReminderGeofences().catch((error) => {
-          console.error('Unable to stop location reminders:', error);
-        });
+        await clearLocationReminderGeofences().catch(() => {});
         currentUserRef.current = null;
         setCurrentUser(null);
         setUsers([]);
@@ -233,9 +231,7 @@ export const TaskProvider = ({ children }) => {
         if (error.status === 401) {
           await clearAuthToken();
           await AsyncStorage.removeItem(AUTH_USER_KEY);
-          await clearLocationReminderGeofences().catch((clearError) => {
-            console.error('Unable to stop location reminders:', clearError);
-          });
+          await clearLocationReminderGeofences().catch(() => {});
           currentUserRef.current = null;
           setCurrentUser(null);
           setUsers([]);
@@ -296,9 +292,7 @@ export const TaskProvider = ({ children }) => {
     } catch (error) {
       if (error.status !== 401) logoutError = error;
     } finally {
-      await clearLocationReminderGeofences().catch((error) => {
-        console.error('Unable to stop location reminders:', error);
-      });
+      await clearLocationReminderGeofences().catch(() => {});
       await clearAuthToken();
       await AsyncStorage.removeItem(AUTH_USER_KEY);
       currentUserRef.current = null;

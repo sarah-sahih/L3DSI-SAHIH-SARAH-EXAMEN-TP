@@ -93,10 +93,18 @@ export const syncLocationReminderGeofences = async (tasks, userId) => {
   if (Platform.OS === 'web') return;
 
   const regions = getLocationReminderRegions(tasks, userId);
-  const isStarted = await Location.hasStartedGeofencingAsync(LOCATION_GEOFENCING_TASK);
+  let isStarted = false;
+  try {
+    isStarted = await Location.hasStartedGeofencingAsync(LOCATION_GEOFENCING_TASK);
+  } catch (_error) {
+    isStarted = false;
+  }
+
   if (regions.length === 0) {
     if (isStarted) {
-      await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+      try {
+        await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+      } catch (_error) {}
     }
     return;
   }
@@ -104,8 +112,15 @@ export const syncLocationReminderGeofences = async (tasks, userId) => {
   const foregroundPermission = await Location.getForegroundPermissionsAsync();
   if (!foregroundPermission.granted) {
     if (isStarted) {
-      await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+      try {
+        await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+      } catch (_error) {}
     }
+    return;
+  }
+
+  const backgroundPermission = await Location.getBackgroundPermissionsAsync();
+  if (!backgroundPermission.granted) {
     return;
   }
 
@@ -131,13 +146,20 @@ export const syncLocationReminderGeofences = async (tasks, userId) => {
     }
   }
 
-  await Location.startGeofencingAsync(LOCATION_GEOFENCING_TASK, regions);
+  try {
+    await Location.startGeofencingAsync(LOCATION_GEOFENCING_TASK, regions);
+  } catch (_error) {}
 };
 
 export const clearLocationReminderGeofences = async () => {
   if (Platform.OS === 'web') return;
-  if (await Location.hasStartedGeofencingAsync(LOCATION_GEOFENCING_TASK)) {
-    await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+  try {
+    const isStarted = await Location.hasStartedGeofencingAsync(LOCATION_GEOFENCING_TASK);
+    if (isStarted) {
+      await Location.stopGeofencingAsync(LOCATION_GEOFENCING_TASK);
+    }
+  } catch (_error) {
+    // Geofencing is not active or background location permission is not granted
   }
 };
 
